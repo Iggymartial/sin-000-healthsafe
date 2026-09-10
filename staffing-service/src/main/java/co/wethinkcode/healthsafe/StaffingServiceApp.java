@@ -3,6 +3,7 @@ package co.wethinkcode.healthsafe;
 import java.time.Instant;
 import java.util.Optional;
 
+import co.wethinkcode.healthsafe.mq.StaffingEventPublisher;
 import io.javalin.Javalin;
 import io.javalin.http.HttpStatus;
 
@@ -21,7 +22,12 @@ public class StaffingServiceApp {
 
         WardClient wardClient = new WardClient();
         AlertLevelClient alertLevelClient = new AlertLevelClient();
-
+        
+        // connectOrNoOp(): if the broker is down, this logs a warning
+        // and returns a no-op publisher instead of throwing - this
+        // service's REST API must keep working with or without MQ up.
+        StaffingEventPublisher eventPublisher = StaffingEventPublisher.connectOrNoOp();
+         
         app.get("/health", ctx -> ctx.result("OK"));
 
         app.get("/schedule/{wardId}", ctx -> {
@@ -55,14 +61,24 @@ public class StaffingServiceApp {
             int alertLevel = level.get();
             int doctorsOnCall = computeDoctorsOnCall(alertLevel, ward.department());
 
-            ctx.json(new ScheduleResponse(
+            ScheduleResponse schedule = new ScheduleResponse(
                     ward.wardId(),
                     ward.department(),
                     alertLevel,
                     doctorsOnCall,
                     "Computed from current Emergency Status and ward department.",
                     Instant.now().toString()
-            ));
+            );
+
+            // Stage 3: broadcast this schedule/status change to
+            // staffing-events-topic. Reuses ScheduleResponse as the wire
+            // format for the event rather than inventing a separate
+            // near-identical type - the REST response and the event
+            // payload are identical right now, so a second type would
+            // just be duplication with no actual benefit yet.
+            eventPublisher.publish(schedule);
+            
+            ctx.json(schedule);
         });
     }
 
@@ -78,5 +94,3 @@ public class StaffingServiceApp {
         return doctors;
     }
 }
-
-// MQ TODO: publishes to ActiveMQ topic MqConfig.TOPIC at MqConfig.BROKER_URL (see co.wethinkcode.healthsafe.mq.MqConfig)
